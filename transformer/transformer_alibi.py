@@ -39,6 +39,13 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.metrics import mean_absolute_percentage_error
+
+def safe_mape(y_true, y_pred, epsilon=1e-6):
+    """MAPE that avoids explosion when y_true is near zero."""
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    denom = np.maximum(np.abs(y_true), epsilon)
+    return np.mean(np.abs((y_true - y_pred) / denom))
 from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
 import random
 
@@ -119,7 +126,8 @@ class InfusionPumpDataset(Dataset):
 
         df = pd.concat(all_data, axis=0).reset_index(drop=True)
         self.data_x = df[['ActiveStartTime']+self.feature_cols+[self.target_col]]
-        self.scaler.fit(self.data_x)
+        if not self.external_scaler:
+            self.scaler.fit(self.data_x)
         self.data_x = self.scaler.transform(self.data_x)
 
     def __getitem__(self, index):
@@ -494,9 +502,10 @@ class ModelBatcher:
             val_y_np = val_y.detach().cpu().numpy()
             num_features = val_x.shape[2]
             target_index = num_features - 1
-            output_inv, test_y_inv = self.inverse_transform_predictions(output_np, val_y_np, vali_data.scaler, num_features, target_index)
-            mape = mean_absolute_percentage_error(output_np, val_y_np)
-            mae = mean_absolute_error(output_np, val_y_np)
+            output_inv, val_y_inv = self.inverse_transform_predictions(output_np, val_y_np, vali_data.scaler, num_features, target_index)
+            # Use inverse-transformed (original scale) data for MAE/MAPE - scaled data has mean~0 causing MAPE explosion
+            mape = safe_mape(val_y_inv, output_inv)
+            mae = mean_absolute_error(output_inv, val_y_inv)
             mae_loss.append(mae)
             mape_loss.append(mape)
             cust_loss.append(loss.item())
@@ -520,12 +529,12 @@ class ModelBatcher:
               loss = self.criterion(output, test_y)
               output_np = output.detach().cpu().numpy()
               test_y_np = test_y.detach().cpu().numpy()
-              mae = mean_absolute_error(output_np, test_y_np)
-              mse = mean_squared_error(output_np, test_y_np)
               num_features = test_x.shape[2]
               target_index = num_features - 1
               output_inv, test_y_inv = self.inverse_transform_predictions(output_np, test_y_np, test_data.scaler, num_features, target_index)
-              mape = mean_absolute_percentage_error(output_np, test_y_np)
+              # Use inverse-transformed (original scale) data for MAE/MAPE - scaled data has mean~0 causing MAPE explosion
+              mape = safe_mape(test_y_inv, output_inv)
+              mae = mean_absolute_error(output_inv, test_y_inv)
               mae_loss.append(mae)
               cust_loss.append(loss.item())
               mape_loss.append(mape)
@@ -747,5 +756,6 @@ trues, preds = predictor.predict_data('val')
 
 
 plot_predictions(trues, preds)
+
 
 
